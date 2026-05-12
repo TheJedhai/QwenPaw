@@ -72,15 +72,15 @@ The user speaks Portuguese; all MCP tool names and fields are in English — map
 recurrence_type: "daily" | "weekly" | "monthly" | null
 recurrence_days:
   null          → if daily or no recurrence
-  [0–6]         → if weekly (0 = Monday, 6 = Sunday)
+  [1–7]         → if weekly (1 = Monday, 7 = Sunday, ISO 8601)
   [1–31]        → if monthly (day of month)
 ```
 
 **Examples:**
 - "Todo dia" → `recurrence_type: "daily"`, `recurrence_days: null`
-- "Toda segunda e quarta" → `recurrence_type: "weekly"`, `recurrence_days: [0, 2]`
+- "Toda segunda e quarta" → `recurrence_type: "weekly"`, `recurrence_days: [1, 3]`
 - "Todo dia 15" → `recurrence_type: "monthly"`, `recurrence_days: [15]`
-- "Toda sexta" → `recurrence_type: "weekly"`, `recurrence_days: [4]`
+- "Toda sexta" → `recurrence_type: "weekly"`, `recurrence_days: [5]`
 
 ---
 
