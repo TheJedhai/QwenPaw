@@ -51,7 +51,8 @@ The user speaks Portuguese; all MCP tool names and fields are in English — map
 - To add a subtask, use `create_task` with a `parent_id` pointing to the parent task.
 
 ### Recurring Tasks
-- Recurring tasks **require** `due_at` — always ask the user for a start date/time if missing.
+- Recurring tasks **require** `due_date` — always ask the user for a start date if missing.
+- `due_time` is optional; recurring tasks work with date alone (time is preserved from the original).
 - Recurring tasks **cannot** have subtasks.
 - Subtasks **cannot** have recurrence (`recurrence_type` must be null).
 
@@ -86,10 +87,11 @@ recurrence_days:
 
 ## Dates & Timezones
 
-- All `due_at` values must be **ISO 8601 UTC** (e.g., `2026-05-13T21:00:00Z`).
-- The user is in **America/Sao_Paulo (UTC-3)**. Convert accordingly:
-  - "amanhã às 18h" = tomorrow 18:00 BRT = tomorrow 21:00 UTC
-- When displaying dates back to the user, convert to local time (UTC-3).
+- `due_date` uses **ISO 8601 date** format (e.g., `2026-05-13`).
+- `due_time` is a wall-clock time in **ISO 8601 time** format (e.g., `21:00:00`), local to the user's timezone — no UTC conversion.
+- The user is in **America/Sao_Paulo (UTC-3)**:
+  - "amanhã às 18h" → `due_date: "2026-05-13"`, `due_time: "18:00:00"`
+- When displaying dates back to the user, convert to local time if needed.
 
 ---
 
@@ -98,7 +100,8 @@ recurrence_days:
 | Error code | How to handle |
 |------------|---------------|
 | `parent_blocked_by_pending_subtasks` | Explain to user; call `get_task` to list which subtasks are pending, then offer to complete them one by one |
-| `recurrence_requires_due_at` | Ask the user for the start date/time before retrying |
+| `recurrence_requires_due_date` | Ask the user for the start date before retrying |
+| `due_time_requires_due_date` | Tell the user that setting a time requires a date first |
 | `subtask_depth_exceeded` | Explain the 1-level limit; offer to create as a sibling task instead |
 | `task_not_found` / `folder_not_found` | Item may have been deleted; suggest calling `list_tasks` or `list_folders` to refresh |
 
@@ -112,7 +115,7 @@ recurrence_days:
 
 **Create a task:**
 1. If a folder is needed, call `list_folders` first to get the `folder_id`
-2. `create_task` with title, optional `folder_id`, `due_at`, recurrence fields
+2. `create_task` with title, optional `folder_id`, `due_date`, `due_time`, recurrence fields
 3. Confirm creation back to the user with the task title
 
 **Complete a task:**
