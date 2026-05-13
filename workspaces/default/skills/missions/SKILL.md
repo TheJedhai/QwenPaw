@@ -56,12 +56,120 @@ After creating, briefly confirm what you did. Example: *"Criei: 'ir ao mercado',
 | `create_folder` | Create a new folder/category for grouping tasks |
 | `get_folder` | Get details of a specific folder including its tasks |
 | `update_folder` | Rename or modify a folder |
-| `list_tasks` | List tasks; supports filtering by folder, status, due date |
+| `list_tasks` | List tasks; supports filtering by folder, status, due_date, priority_min, has_due_date, title_contains, completed_after/before, is_recurring |
 | `create_task` | Create a new task (with optional folder, due date, recurrence, subtasks) |
 | `get_task` | Get full details of a single task including subtasks |
 | `update_task` | Edit title, description, folder, due date, recurrence — NOT for marking done |
 | `complete_task` | Mark a task as done — the ONLY way to change status to "done" |
 | `delete_task` | Permanently delete a task and all its subtasks (irreversible — confirm first) |
+
+---
+
+## Priority Schema
+
+Tasks have a `priority` field with three levels:
+
+| Value | Label | Flag |
+|-------|-------|------|
+| `0` | none / sem prioridade | (no flag) |
+| `1` | medium / média | 🟡 yellow flag |
+| `2` | high / alta | 🔴 red flag |
+
+When the user uses urgency-related language, map it to a priority level:
+
+- **"urgente"**, **"importante"**, **"prioritário"**, **"prioridade alta"** → `priority: 2`
+- **"prioridade média"**, **"médio"**, **"moderado"** → `priority: 1`
+- If no urgency is mentioned, omit `priority` — the backend defaults to `0`.
+
+---
+
+## Query Recipes (list_tasks)
+
+The `list_tasks` tool supports filtering beyond just `folder` and `status`. Use these recipes for common user questions.
+
+**Important:** When the user uses a relative date expression ("hoje", "essa semana", "amanhã"), you MUST calculate the actual `YYYY-MM-DD` date in **America/Sao_Paulo (UTC-3)** before calling the tool. The tool accepts absolute dates only.
+
+### Available Filters
+
+| Param | Type | Description |
+|-------|------|-------------|
+| `folder_id` | int | Filter by folder |
+| `status` | str | `"pending"` or `"done"` |
+| `page` | int | Page number (default 1) |
+| `per_page` | int | Results per page (default 15) |
+| `sort_by` | str | `"due_date"`, `"created_at"`, `"updated_at"`, `"title"` |
+| `sort_order` | str | `"asc"` or `"desc"` |
+| `due_before` | date | Tasks due on or before this date (`YYYY-MM-DD`) |
+| `due_after` | date | Tasks due on or after this date (`YYYY-MM-DD`) |
+| `priority_min` | int | Tasks with priority >= value (0, 1, or 2) |
+| `has_due_date` | bool | `true` = has a due date set; `false` = no due date |
+| `title_contains` | str | Case-insensitive substring search in title |
+| `completed_after` | date | Completed on or after this date (`YYYY-MM-DD`) |
+| `completed_before` | date | Completed on or before this date (`YYYY-MM-DD`) |
+| `is_recurring` | bool | `true` = recurring tasks only; `false` = non-recurring only |
+
+### Common Queries
+
+**"Missões pra hoje"** — tasks due today, pending:
+```
+list_tasks(due_before="2026-05-13", due_after="2026-05-13", status="pending")
+```
+Use `due_before=today` and `due_after=today` together to match exactly today's date (tasks due today and overdue tasks from earlier are caught by `due_before=today`; `due_after=today` excludes future tasks).
+
+**"O que está atrasado"** — overdue pending tasks:
+```
+list_tasks(due_before="2026-05-12", status="pending")
+```
+Calculate `due_before` as yesterday (today − 1) in UTC-3.
+
+**"Missões urgentes"** — high-priority pending tasks:
+```
+list_tasks(priority_min=2, status="pending")
+```
+
+**"Missões de média prioridade"** — medium-priority pending:
+```
+list_tasks(priority_min=1, status="pending")
+```
+Note: `priority_min=1` returns both medium (1) and high (2). To get only medium, post-filter the results client-side.
+
+**"Missões sem prazo"** — pending tasks with no due date:
+```
+list_tasks(has_due_date=false, status="pending")
+```
+
+**"Buscar missão X no título"** — search by title substring:
+```
+list_tasks(title_contains="mercado", status="pending")
+```
+Match is case-insensitive.
+
+**"Missões concluídas essa semana"** — done this week:
+```
+list_tasks(status="done", completed_after="2026-05-11")
+```
+Calculate `completed_after` as Monday of the current week (ISO 8601: Monday = week start) in UTC-3.
+
+**"Missões concluídas esse mês"** — done this month:
+```
+list_tasks(status="done", completed_after="2026-05-01")
+```
+
+**"Minhas missões recorrentes"** — recurring tasks:
+```
+list_tasks(is_recurring=true, status="pending")
+```
+
+**"Todas as missões de hoje (incluindo concluídas)"** — all tasks due today regardless of status:
+```
+list_tasks(due_before="2026-05-13", due_after="2026-05-13")
+```
+Omit `status` to include both pending and done.
+
+**Combined filters** — "missões urgentes pra hoje":
+```
+list_tasks(priority_min=2, due_before="2026-05-13", due_after="2026-05-13", status="pending")
+```
 
 ---
 
@@ -118,11 +226,12 @@ recurrence_days:
 
 ## Dates & Timezones
 
-- `due_date` uses **ISO 8601 date** format (e.g., `2026-05-13`).
+- `due_date`, `due_before`, `due_after`, `completed_after`, `completed_before` use **ISO 8601 date** format (e.g., `2026-05-13`).
 - `due_time` is a wall-clock time in **ISO 8601 time** format (e.g., `21:00:00`), local to the user's timezone — no UTC conversion.
 - The user is in **America/Sao_Paulo (UTC-3)**:
   - "amanhã às 18h" → `due_date: "2026-05-13"`, `due_time: "18:00:00"`
 - When displaying dates back to the user, convert to local time if needed.
+- **CRITICAL:** When the user says "hoje", "essa semana", "esse mês", or any relative date, calculate the absolute `YYYY-MM-DD` in UTC-3 **before** calling the tool. The API only accepts absolute dates, not relative expressions.
 
 ---
 
@@ -143,8 +252,10 @@ recurrence_days:
 ## Workflow Patterns
 
 **List pending tasks:**
-1. `list_tasks` (filter `status: "pending"` or by folder)
-2. Present in a clean list with due dates converted to BRT
+1. Check if the user's request matches a [Query Recipe](#query-recipes-list_tasks) — use the appropriate filter combination for the intent ("pra hoje", "atrasadas", "urgentes", "sem prazo", "por título", "concluídas", "recorrentes").
+2. If the intent is a relative date ("hoje", "essa semana"), calculate the absolute date in UTC-3 first.
+3. Call `list_tasks` with the right filters.
+4. Present in a clean list with due dates converted to BRT.
 
 **Create a task:**
 1. `create_task` with title and optional `due_date`, `due_time`, `recurrence_type`, `recurrence_days` — omit `folder_id` unless the user explicitly named a folder
