@@ -35,6 +35,16 @@ When the user creates a mission, infer missing fields instead of asking:
 - **No folder mentioned**: omit `folder_id` from the `create_task` call. The backend automatically assigns the default folder "Geral".
 - **No notes mentioned**: `notes` stays `null`.
 
+### Reminder (reminder_minutes_before) Inference
+
+When the user creates or updates a mission that could have a reminder:
+
+- **User didn't mention notification** → `reminder_minutes_before` = `null` (default: no notification). **Do not ask.**
+- **User asked for a reminder without specifying when** ("me lembra", "me avisa", "manda notificação") + **task has `due_time`** → assume `reminder_minutes_before` = `30` (30 min before).
+- **User specified a time** ("avisa 1h antes", "notifica 30 min antes", "lembrete 1 dia antes") → map to the **closest accepted preset** (see Presets table below).
+- **User said "no horário" / "na hora"** → `reminder_minutes_before` = `0` (notify exactly at due time).
+- **User asked for reminder but task has no `due_time`** → create the task normally **without** a reminder, and warn: *"Criei sem lembrete porque a missão não tem horário definido. Quer adicionar um horário?"*
+
 ### When to ask
 
 Only ask the user when:
@@ -57,9 +67,9 @@ After creating, briefly confirm what you did. Example: *"Criei: 'ir ao mercado',
 | `get_folder` | Get details of a specific folder including its tasks |
 | `update_folder` | Rename or modify a folder |
 | `list_tasks` | List tasks; supports filtering by folder, status, due_date, priority_min, has_due_date, title_contains, completed_after/before, is_recurring |
-| `create_task` | Create a new task (with optional folder, due date, recurrence, subtasks) |
+| `create_task` | Create a new task (with optional folder, due date, recurrence, subtasks, reminder) |
 | `get_task` | Get full details of a single task including subtasks |
-| `update_task` | Edit title, description, folder, due date, recurrence — NOT for marking done |
+| `update_task` | Edit title, description, folder, due date, recurrence, reminder — NOT for marking done |
 | `complete_task` | Mark a task as done — the ONLY way to change status to "done" |
 | `delete_task` | Permanently delete a task and all its subtasks (irreversible — confirm first) |
 
@@ -80,6 +90,32 @@ When the user uses urgency-related language, map it to a priority level:
 - **"urgente"**, **"importante"**, **"prioritário"**, **"prioridade alta"** → `priority: 2`
 - **"prioridade média"**, **"médio"**, **"moderado"** → `priority: 1`
 - If no urgency is mentioned, omit `priority` — the backend defaults to `0`.
+
+---
+
+## Reminders (Lembretes)
+
+Tasks can have an optional `reminder_minutes_before` field that controls push notifications sent before the task's `due_time`.
+
+### Accepted Presets (closed list)
+
+Only these exact values are accepted by the API. Any other value is rejected with `validation_error`.
+
+| Value | Meaning |
+|-------|---------|
+| `null` | No reminder (default) |
+| `0` | At due time ("na hora") |
+| `5` | 5 minutes before |
+| `15` | 15 minutes before |
+| `30` | 30 minutes before |
+| `60` | 1 hour before |
+| `1440` | 1 day before (24h) |
+
+**Approximation rule:** If the user says a non-preset value (e.g. "45 min antes", "2h antes"), map to the **closest preset** from the list above. Example: "45 min" → `60`, "2 horas" → `60`, "12 horas" → `1440`.
+
+### Hard Rule
+
+`reminder_minutes_before` **requires `due_time`**. If `due_time` is not set, the only valid value is `null`. Setting a non-null reminder without `due_time` causes a `reminder_requires_due_time` error.
 
 ---
 
@@ -166,6 +202,9 @@ list_tasks(due_before="2026-05-13", due_after="2026-05-13")
 ```
 Omit `status` to include both pending and done.
 
+**"Missões com lembrete"** — tasks that have reminders configured:
+There is no server-side filter for `reminder_minutes_before`. The BMO must retrieve pending tasks and filter client-side by checking `reminder_minutes_before` is not `null` in the response. The API returns this field when present.
+
 **Combined filters** — "missões urgentes pra hoje":
 ```
 list_tasks(priority_min=2, due_before="2026-05-13", due_after="2026-05-13", status="pending")
@@ -242,6 +281,7 @@ recurrence_days:
 | `parent_blocked_by_pending_subtasks` | Explain to user; call `get_task` to list which subtasks are pending, then offer to complete them one by one |
 | `recurrence_requires_due_date` | A `due_date` is required for recurring tasks — infer one from the recurrence pattern if the user didn't specify |
 | `due_time_requires_due_date` | Tell the user that setting a time requires a date first |
+| `reminder_requires_due_time` | "A notificação exige uma hora definida. Adicionar due_time ou remover o reminder." |
 | `subtask_depth_exceeded` | Explain the 1-level limit; offer to create as a sibling task instead |
 | `folder_required` | A task must always belong to a folder — if `update_task` tries to clear the folder, move to "Geral" instead |
 | `cannot_delete_default_folder` | The "Geral" folder cannot be deleted; tell the user this is a system restriction |
@@ -258,8 +298,8 @@ recurrence_days:
 4. Present in a clean list with due dates converted to BRT.
 
 **Create a task:**
-1. `create_task` with title and optional `due_date`, `due_time`, `recurrence_type`, `recurrence_days` — omit `folder_id` unless the user explicitly named a folder
-2. Confirm creation back to the user with the task title, recurrence, and folder
+1. `create_task` with title and optional `due_date`, `due_time`, `recurrence_type`, `recurrence_days`, `reminder_minutes_before` — omit `folder_id` unless the user explicitly named a folder. Apply [Reminder Inference](#reminder-reminder_minutes_before-inference) rules if the user mentioned notifications.
+2. Confirm creation back to the user with the task title, recurrence, folder, and reminder if set
 
 **Complete a task:**
 1. `complete_task` with the task ID
