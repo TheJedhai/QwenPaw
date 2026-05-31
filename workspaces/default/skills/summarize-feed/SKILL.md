@@ -9,6 +9,8 @@ metadata:
 
 # Summarize Feed (Resumo de Notícias)
 
+**Routing:** Se o usuário quer **resumir/sintetizar** notícias (ex: "resume as notícias", "me dá um panorama", "resume essa matéria"), use esta skill. Se quer **listar, navegar ou marcar como lida** uma notícia, use a skill [read-news](../read-news/SKILL.md).
+
 ## Vocabulary PT↔EN
 
 | Português | English (tool field / concept) |
@@ -131,7 +133,7 @@ User: *"Resume a matéria 42"*
 BMO:
 > **"Governo anuncia novas medidas para agricultura familiar"** — Brasil de Fato
 >
-> > O governo federal lançou um pacote de medidas voltado à agricultura familiar, incluindo R$ 5 bilhões em linhas de crédito com juros subsidiados e a criação de 200 novos postos de assistência técnica em municípios do Nordeste. O plano also prevê a simplificação do acesso ao Pronaf e a ampliação do programa de compras institucionais para merenda escolar.
+> > O governo federal lançou um pacote de medidas voltado à agricultura familiar, incluindo R$ 5 bilhões em linhas de crédito com juros subsidiados e a criação de 200 novos postos de assistência técnica em municípios do Nordeste. O plano também prevê a simplificação do acesso ao Pronaf e a ampliação do programa de compras institucionais para merenda escolar.
 >
 > 📋 em cache · [Ler matéria completa](https://brasildefato.com.br/...)
 
@@ -199,7 +201,7 @@ Only ask the user when:
 | Error code / scenario | How to handle |
 |-----------------------|---------------|
 | `article_not_found` (404) | "Essa matéria não está mais disponível. Quer listar as notícias de novo?" |
-| `summarizer_unavailable` (503) | "O resumidor não está configurado no servidor (DeepSeek API key ausente)." — the user needs to configure `DEEPSEEK_API_KEY` on the bmo-server |
+| `summarizer_unavailable` (503) | "O resumidor não está configurado no servidor (DeepSeek API key ausente)." — the user needs to configure `BMO_DEEPSEEK_API_KEY` on the bmo-server |
 | `summarizer_timeout` (504) | "O DeepSeek demorou muito para responder. Tenta de novo? Pode ter sido um pico." |
 | `summarizer_error` (502) | "O DeepSeek retornou um erro. Tenta de novo em alguns segundos." |
 | Article has no content, only title | Warn user the summary will be superficial, ask if they want to proceed |

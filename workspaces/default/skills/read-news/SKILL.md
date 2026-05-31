@@ -9,6 +9,8 @@ metadata:
 
 # Read News (Leitura de Notícias RSS)
 
+**Routing:** Se o usuário quer **listar, navegar, abrir ou marcar como lida** uma notícia, use esta skill. Se quer **resumir/sintetizar** notícias (ex: "resume as notícias", "me dá um resumo do que saiu"), use a skill [summarize-feed](../summarize-feed/SKILL.md).
+
 ## Vocabulary PT↔EN
 
 | Português | English (tool field / concept) |
