@@ -1,6 +1,6 @@
 ---
 name: generate-image
-description: "Generate images via the BMO server MCP image tools (create_image, get_image, list_images). Use whenever the user wants to generate, create, or draw an image — whether from a vague idea or a detailed prompt. Handles prompt enrichment, async lifecycle (pending→generating→done), disciplined waiting, and file delivery."
+description: "Generate images via the BMO server MCP image tools (create_image, wait_for_image, get_image, list_images). Use whenever the user wants to generate, create, or draw an image — whether from a vague idea or a detailed prompt. Handles prompt enrichment, async lifecycle (pending→generating→done), server-side blocking wait, and file delivery."
 metadata:
   builtin_skill_version: "1.0"
   qwenpaw:
@@ -51,7 +51,8 @@ Only ask the user when:
 | Tool | When to use |
 |------|-------------|
 | `create_image` | Start a new image generation. Returns immediately with `status: "pending"` and an `id`. Does NOT wait for completion. |
-| `get_image` | Check the status of a generation and retrieve the result. Returns `status`, and when done, `output_path` (absolute path to the image file on disk). |
+| `wait_for_image` | **Primary tool for waiting.** Blocks on the server for up to ~20s, returning as soon as the image reaches a terminal status (`done`/`failed`) or the timeout expires. Use in a loop until the image is ready — this replaces all manual polling. |
+| `get_image` | **Spot-check only.** Look up a single image by id — use when the user asks about a specific past image ("aquela imagem do gato ficou pronta?"). Do NOT use for the generation wait loop; that's what `wait_for_image` is for. |
 | `list_images` | List previously generated images. Use when the user asks about their image history. |
 
 ---
@@ -96,7 +97,7 @@ SDXL models prefer **comma-separated tags and short descriptors** — like keywo
 
 ## Async Lifecycle
 
-Image generation is **asynchronous and slow** (~90 seconds). Understanding the lifecycle is critical to avoid wasteful polling.
+Image generation is **asynchronous and slow** (~90 seconds). Understanding the lifecycle is critical.
 
 ```
 pending ──→ generating ──→ done
@@ -106,9 +107,9 @@ pending ──→ generating ──→ done
 
 | Status | Meaning | What you should do |
 |--------|---------|--------------------|
-| `pending` | Queued, hasn't started yet | Wait. Do NOT poll. |
-| `generating` | Model is actively running | Wait. Do NOT poll (unless well past the ~90s mark). |
-| `done` | Image is ready | Call `get_image` to retrieve the `output_path`, then deliver to user. |
+| `pending` | Queued, hasn't started yet | Call `wait_for_image` — the server will block until the status changes. |
+| `generating` | Model is actively running on GPU | Call `wait_for_image` again. This is **NORMAL and EXPECTED** — the generation takes ~90s total and each `wait_for_image` call covers ~20s. It typically takes 4-5 calls. |
+| `done` | Image is ready | Retrieve `output_path` from the response, then deliver to user via `send_file_to_user`. |
 | `failed` | Something went wrong | Read `error` field, inform the user honestly. |
 
 `create_image` always returns `status: "pending"` (or occasionally `"generating"`) — it NEVER returns `"done"` on the first call. The generation runs on the Mac mini's GPU via Draw Things.
@@ -117,52 +118,78 @@ pending ──→ generating ──→ done
 
 ## Waiting Strategy (Estratégia de Espera)
 
-**This is critical.** Every call to `get_image` costs tokens. Polling too early or too often wastes the user's resources with zero benefit — the image won't be ready.
+**This is critical.** The old approach of manual polling with `get_image` is obsolete. The server now provides `wait_for_image`, which blocks server-side and returns explicit instructions for each state.
+
+### How `wait_for_image` works
+
+`wait_for_image` receives an image `id` and blocks on the server for up to ~20 seconds. It returns as soon as the image reaches a terminal status (`done` or `failed`), or when the 20s timeout expires. The response includes both the status and an **instruction** telling you exactly what to do next.
+
+| Return status | What it means | Instruction you MUST follow |
+|---------------|---------------|-----------------------------|
+| `done` | Image generation completed successfully | The response contains `output_path`. Deliver the image to the user via `send_file_to_user`. |
+| `failed` | Generation failed with an error | The response contains `error`. Inform the user honestly with the error message. |
+| `generating` | Still in progress after 20s of waiting | **This is NORMAL.** Generation takes ~90s total. Simply call `wait_for_image` again with the same id to continue waiting. This is NOT an error, NOT a hang, NOT "Draw Things esperando ação manual." It just means the GPU is still working. |
 
 ### The disciplined approach
 
 1. **Call `create_image`** with the enriched prompt.
-2. **Respond to the user immediately** that generation has started and takes ~90 segundos. Do NOT call `get_image` right after.
-3. **Wait ~90 seconds** before the first `get_image` call. There is no point checking sooner — the image will not be `done` in the first 60-90 seconds.
-4. **Call `get_image` once** at the ~90s mark:
-   - If `done` → deliver the image (go to [Delivering the Image](#delivering-the-image)).
-   - If still `generating` or `pending` → now you may enter a **spaced polling loop**: call `get_image` every **15-20 seconds** until `done` or `failed`. Never poll faster than 15s.
-   - If `failed` → go to [Handling Failed](#handling-failed).
+2. **Tell the user immediately** that generation started and takes ~90 segundos.
+3. **Call `wait_for_image`** with the image `id`. The server blocks for up to ~20s.
+4. **Read the status from the response:**
+   - `done` → deliver the image (go to [Delivering the Image](#delivering-the-image)).
+   - `failed` → go to [Handling Failed](#handling-failed).
+   - `generating` → **call `wait_for_image` again.** This is the expected path — each call covers ~20s, so it typically takes 4-5 calls total (~90s ÷ 20s) until `done`. Keep calling until you get `done` or `failed`. Never stop early just because you got `generating` — that status means "still working, keep waiting."
+5. **After delivery**, offer to adjust: "Se quiser mudar algo no prompt, é só pedir."
 
 ### Visual summary
 
 ```
-create_image ──→ tell user "~90s" ──→ wait 90s ──→ get_image
-                                                       │
-                                          ┌─ done ─────┤
-                                          │             │
-                                          │    generating/pending
-                                          │             │
-                                          ▼             ▼
-                                   send_file_to_user   wait 15-20s ──→ get_image
-                                                                           │
-                                                              ┌─ done ─────┤
-                                                              │             │
-                                                              │    still not done
-                                                              │             │
-                                                              ▼             ▼
-                                                       send_file_to_user   loop (15-20s interval)
+create_image ──→ tell user "~90s" ──→ wait_for_image(id)
+                                           │
+                              ┌─ done ─────┤
+                              │            │
+                              │     generating (NORMAL!)
+                              │            │
+                              ▼            ▼
+                       send_file_to_user   wait_for_image(id) again
+                                                │
+                                   ┌─ done ─────┤
+                                   │            │
+                                   │     generating
+                                   │            │
+                                   ▼            ▼
+                            send_file_to_user   loop (~4-5 calls total until done)
 ```
+
+### Why this replaces the old approach
+
+- **Old way (removed):** Call `create_image`, wait 90s manually, then poll with `get_image` every 15-20s in a loop. This was fragile — the BMO had to guess when to check, burned tokens on manual polling, and often gave up too early declaring failure on a generation still in progress.
+- **New way:** `wait_for_image` does the waiting on the server side. The BMO just calls it in a loop until the status is terminal. Each `generating` response is explicit confirmation that the GPU is working — not a reason to stop or panic.
+
+### `get_image` still exists — when to use it
+
+`get_image` remains available for **spot-checks only** — discrete, one-off lookups:
+
+- The user asks later: "aquela imagem do gato samurai que eu pedi mais cedo, ficou pronta?"
+- You need to retrieve metadata (prompt, model, timestamps) for a specific past image without waiting.
+
+For the generation wait loop, always use `wait_for_image`.
 
 ### Anti-patterns (NEVER do these)
 
-- ❌ Calling `get_image` immediately after `create_image` (image just entered the queue)
-- ❌ Polling every 2-5 seconds (burns tokens for no reason — image generation is slow)
-- ❌ Calling `get_image` 10+ times in a single turn
+- ❌ Calling `get_image` in a loop to wait for generation to finish — use `wait_for_image` instead
+- ❌ Treating `generating` status from `wait_for_image` as a failure, error, or hang — it is NORMAL and EXPECTED
+- ❌ Calling `wait_for_image` only once and giving up if it returns `generating` — keep calling until `done` or `failed`
 - ❌ Staying silent after `create_image` — tell the user what's happening
+- ❌ Using `execute_shell_command` or `Bash` for anything related to images
 
 ---
 
 ## Delivering the Image
 
-When `get_image` returns `status: "done"`, the response includes an `output_path` field with the absolute path to the image file on the Mac mini's disk.
+When `wait_for_image` (or a spot-check `get_image`) returns `status: "done"`, the response includes an `output_path` field with the absolute path to the image file on the Mac mini's disk.
 
-Example `get_image` response when done:
+Example response when done:
 
 ```json
 {
@@ -179,7 +206,7 @@ Example `get_image` response when done:
 ### The ONLY correct delivery path
 
 ```
-get_image (done) → send_file_to_user(file_path=output_path)
+wait_for_image (done) → send_file_to_user(file_path=output_path)
 ```
 
 Use the native QwenPaw tool `send_file_to_user` with the `output_path` value exactly as returned. Nothing else.
@@ -194,9 +221,9 @@ Use the native QwenPaw tool `send_file_to_user` with the `output_path` value exa
 - Run any image processing command (`sips`, `magick`, `ffmpeg`, etc.)
 - Open the image in Preview or any GUI app (`open`, `qlmanage`, etc.)
 
-**Why:** Shell access bypasses the tool architecture, is not traceable in the MCP audit log, and breaks the contract between BMO and QwenPaw. The correct path is `get_image` → `send_file_to_user`. Always.
+**Why:** Shell access bypasses the tool architecture, is not traceable in the MCP audit log, and breaks the contract between BMO and QwenPaw. The correct path is `wait_for_image` → `send_file_to_user`. Always.
 
-If you're tempted to check "does the file exist?" — you already have `output_path` from `get_image` with `status: "done"`. The file exists. Trust the tool.
+If you're tempted to check "does the file exist?" — you already have `output_path` from `wait_for_image` with `status: "done"`. The file exists. Trust the tool.
 
 ---
 
@@ -221,7 +248,7 @@ The user is the only one who can see the image. Your job is to be a skilled prom
 
 ## Handling Failed
 
-When `get_image` returns `status: "failed"`, the response includes an `error` field with a human-readable message.
+When `wait_for_image` (or `get_image`) returns `status: "failed"`, the response includes an `error` field with a human-readable message.
 
 Example failure responses:
 
@@ -248,6 +275,8 @@ Example failure responses:
 3. **Suggest a fix** if the error message points to one (e.g., wrong model name → suggest available models; Draw Things offline → tell user to open it).
 4. **Never pretend it succeeded.** Do not say "a imagem ficou pronta" or try to deliver a file that doesn't exist.
 
+**Note:** `failed` is the ONLY status that means something went wrong. Do not confuse `generating` (normal in-progress state) with failure.
+
 ---
 
 ## Model Selection
@@ -266,11 +295,11 @@ Example failure responses:
 2. **Enrich the prompt** following [Prompt Enrichment](#prompt-enrichment-enriquecimento-de-prompt). Expand into a rich English description. Choose prose or tags based on the target model family.
 3. **Call `create_image`** with the enriched prompt (and `model` only if the user explicitly asked for one). Do NOT pass `model` by default.
 4. **Tell the user immediately**: "Gerando! Isso leva ~90 segundos. [breve descrição do prompt que você montou]."
-5. **Wait ~90 seconds** before the first status check.
-6. **Call `get_image`** with the image `id`:
+5. **Call `wait_for_image`** with the image `id`. The server blocks for up to ~20s.
+6. **Read the status:**
    - `done` → call `send_file_to_user(file_path=output_path)`. Describe what you prompted, not what you "see."
-   - `generating` / `pending` → tell user "Ainda gerando, vou checar de novo em 15s." Wait 15-20s, then `get_image` again. Loop until `done` or `failed`.
    - `failed` → read `error`, tell user honestly, suggest fix if possible.
+   - `generating` → **call `wait_for_image` again.** This is NORMAL. Repeat until `done` or `failed`. Expect ~4-5 calls total.
 7. **After delivery**, offer to adjust: "Se quiser mudar algo no prompt, é só pedir."
 
 ### List previous images
@@ -282,25 +311,22 @@ Example failure responses:
 
 ## Flow Examples
 
-### Example 1: Complete interaction (happy path)
+### Example 1: Complete interaction (happy path, ready on first wait)
 
 **User:** "faz uma imagem de um gato samurai"
 
 **BMO (turn 1 — enrichment + create):**
 > Vou gerar! Expandi seu pedido para um prompt descritivo em inglês: *"A majestic tabby cat dressed in ornate samurai armor with a kabuto helmet, standing in a bamboo forest at sunset, cherry blossom petals falling, cinematic lighting, highly detailed, 8k, photorealistic"*. A geração leva ~90 segundos.
 
-*[BMO calls: `create_image(prompt="A majestic tabby cat dressed in ornate samurai armor with a kabuto helmet, standing in a bamboo forest at sunset, cherry blossom petals falling, cinematic lighting, highly detailed, 8k, photorealistic")`]*
+*[BMO calls: `create_image(prompt="A majestic tabby cat dressed in ornate samurai armor with a kabuto helmet, standing in a bamboo forest at sunset, cherry blossom petals falling, cinematic lighting, highly detailed, 8k, photorealistic")` → returns `id: 45`]*
 
-*[BMO waits 90 seconds]*
-
-**BMO (turn 2 — check):**
-*[BMO calls: `get_image(id=45)` → returns `status: "done"`, `output_path: "/Users/jedhai/Library/Application Support/BMO/images/5.png"`]*
+*[BMO calls: `wait_for_image(id=45)` → blocks ~20s, returns `status: "done"`, `output_path: "/Users/jedhai/Library/Application Support/BMO/images/5.png"`]*
 
 > Aqui está! Gerei com o prompt: *"A majestic tabby cat dressed in ornate samurai armor..."*. Se não ficou como você imaginou, me diz que eu ajusto.
 
 *[BMO calls: `send_file_to_user(file_path="/Users/jedhai/Library/Application Support/BMO/images/5.png")`]*
 
-### Example 2: Slow generation (polling loop kicks in)
+### Example 2: Typical generation (multiple wait_for_image calls)
 
 **User:** "cria uma paisagem cyberpunk"
 
@@ -308,11 +334,10 @@ Example failure responses:
 > Gerando! Prompt: *"A sprawling cyberpunk cityscape at night, neon lights reflecting in rain-slicked streets, flying cars, holographic billboards, towering skyscrapers, Blade Runner aesthetic, cinematic, 8k"*. ~90 segundos.
 
 *[BMO calls: `create_image(prompt="...")` → returns `id: 46`]*
-*[BMO waits 90s, calls `get_image(id=46)` → returns `status: "generating"`]*
-
-> Ainda gerando — o modelo está processando. Vou checar de novo em 15s.
-
-*[BMO waits 20s, calls `get_image(id=46)` → returns `status: "done"`, `output_path: ".../6.png"`]*
+*[BMO calls: `wait_for_image(id=46)` → blocks ~20s, returns `status: "generating"`]*
+*[BMO calls: `wait_for_image(id=46)` → blocks ~20s, returns `status: "generating"`]*
+*[BMO calls: `wait_for_image(id=46)` → blocks ~20s, returns `status: "generating"`]*
+*[BMO calls: `wait_for_image(id=46)` → blocks ~20s, returns `status: "done"`, `output_path: ".../6.png"`]*
 
 > Pronto! Aqui está a paisagem cyberpunk. Se quiser ajustar algo (mais chuva, mais neon, outra hora do dia), é só falar.
 
@@ -326,7 +351,7 @@ Example failure responses:
 > Gerando com DreamShaper! Prompt: *"A serene mountain lake at dawn, mirror-like water reflecting snow-capped peaks, pine trees along the shoreline, soft mist, photorealistic, 8k"*. ~90 segundos.
 
 *[BMO calls: `create_image(prompt="...", model="DreamShaper")` → returns `id: 47`]*
-*[BMO waits 90s, calls `get_image(id=47)` → returns `status: "failed"`, `error: "Model 'DreamShaper' not found. Available models: FLUX.2 [klein], Juggernaut XL"`]*
+*[BMO calls: `wait_for_image(id=47)` → blocks, returns `status: "failed"`, `error: "Model 'DreamShaper' not found. Available models: FLUX.2 [klein], Juggernaut XL"`]*
 
 > A geração falhou. O modelo "DreamShaper" não está disponível no Draw Things. Os modelos disponíveis são: **FLUX.2 [klein]** e **Juggernaut XL**. Quer que eu gere com um desses? Se sim, me diz qual.
 
@@ -339,7 +364,8 @@ Example failure responses:
 | `status: "failed"` with Draw Things offline | Tell user: "Draw Things não está rodando no Mac mini. Abra o app e carregue um modelo, depois tente de novo." |
 | `status: "failed"` with model not found | Relay the `error` message. List available models if the error includes them. Offer to use the default model instead. |
 | `status: "failed"` with generic error | Relay the exact `error` message to the user. Don't try to interpret or sugarcoat it. |
-| Image `id` not found on `get_image` | The image may have been deleted or the ID is wrong. Call `list_images` to show the user what's available. |
+| `status: "generating"` from `wait_for_image` | **This is NOT an error.** Call `wait_for_image` again. The GPU is still working. Do not report this to the user as a problem — just continue the loop silently. |
+| Image `id` not found on `wait_for_image` or `get_image` | The image may have been deleted or the ID is wrong. Call `list_images` to show the user what's available. |
 | User wants an image style you can't do | Be honest about limitations. Suggest the closest available approach. Never promise capabilities you don't have. |
 | User asks "a imagem ficou boa?" | Remind them you can't see it: "Eu não consigo ver a imagem — você é os olhos! Me conta você: ficou bom? Se não, posso ajustar o prompt." |
 
@@ -350,7 +376,7 @@ Example failure responses:
 You MUST use the following tool chain for ALL image operations:
 
 ```
-create_image → get_image → send_file_to_user
+create_image → wait_for_image → send_file_to_user
 ```
 
 **Absolutely forbidden:**
@@ -361,4 +387,4 @@ create_image → get_image → send_file_to_user
 
 If you break this rule, you bypass the MCP audit trail, the user's permission system, and the architectural contract between BMO and QwenPaw. There is no exception. If you think you need shell access for an image operation, you're wrong — the MCP tools already handle it.
 
-**The only path:** `get_image` returns `output_path` → `send_file_to_user` delivers it. Period.
+**The only path:** `wait_for_image` returns `output_path` → `send_file_to_user` delivers it. Period.
