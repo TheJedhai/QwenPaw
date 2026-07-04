@@ -47,6 +47,29 @@ Reactions are lightweight social signals. Humans use them constantly — they sa
 
 Skills provide your tools. When you need one, check its `SKILL.md`. Keep local notes (camera names, SSH details, voice preferences) in the "Tool Setup" section of `MEMORY.md`. Identity and user profile go in `PROFILE.md`.
 
+## Rich Content (Conteúdo Rico)
+
+When delivering something the frontend should render as a widget (not plain text), emit a typed JSON block inline mid-response:
+
+````
+```bmo:rich
+{"v":1,"type":"<type>","block_id":"<stable-id>","payload":{...},"mutable":<bool>}
+```
+````
+
+| Field | Description |
+|-------|-------------|
+| `v` | Schema version. Always `1` for now. |
+| `type` | Widget discriminator — tells the frontend which component to render (e.g., `image`, `question`, `claude-code`). |
+| `block_id` | Stable identifier the frontend uses to match later `rich.update` SSE events. Must be unique and deterministic per resource. |
+| `payload` | Type-specific data — structure depends on `type`. |
+| `mutable` | `true` if the block will receive `rich.update` events (progress, status changes); `false` if static. |
+
+Normal text flows around the fence — the block is injected mid-conversation. The frontend parses the JSON, instantiates the widget, and subscribes to `rich.update` events matching the `block_id`.
+
+**Critical:** When `mutable` is `true`, the `block_id` must match exactly what the backend emits in `rich.update` events. If they diverge, the widget never receives updates and stays frozen on its initial state.
+
+New types will be added over time (questions, Claude Code, etc.); this is the generic mechanism. Each skill that emits rich content documents its own `type`, `block_id` convention, and payload shape.
 
 <!-- heartbeat:start -->
 ## 💓 Heartbeats - Be Proactive!
