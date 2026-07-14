@@ -414,9 +414,32 @@ class HttpStatefulClient(StatefulClientBase):
                             else self.sse_read_timeout
                         )
 
-                        # Configure httpx client with MCP-recommended timeouts
+                        # Configure httpx client with MCP-recommended timeouts.
+                        #
+                        # Custom headers are set as client defaults AND also
+                        # injected via an event hook so they are included in
+                        # EVERY HTTP request (initialize, tools/list,
+                        # tools/call, GET SSE stream, session termination).
+                        # The hook is a belt-and-suspenders safeguard: the
+                        # streamable HTTP protocol issues independent POST
+                        # requests for each tool call, and we must ensure
+                        # static config headers reach every single one.
+                        async def _inject_custom_headers(
+                            request: httpx.Request,
+                        ) -> None:
+                            if self.headers:
+                                for key, value in self.headers.items():
+                                    if key not in request.headers:
+                                        request.headers[key] = value
+                                logger.debug(
+                                    "MCP client '%s' request headers: %s",
+                                    self.name,
+                                    dict(request.headers),
+                                )
+
                         http_client = httpx.AsyncClient(
                             headers=self.headers or {},
+                            event_hooks={"request": [_inject_custom_headers]},
                             timeout=httpx.Timeout(
                                 connect=timeout_seconds,
                                 read=sse_read_timeout_seconds,
